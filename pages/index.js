@@ -1725,6 +1725,12 @@ const messages = useMemo(() => {
   )}
 
 </div>
+<button
+  onClick={leaveRoom}
+  className="w-full mt-5 bg-red-50 text-red-500 font-bold py-4 rounded-2xl border border-red-100 hover:bg-red-100 transition"
+>
+  🚪 Exit Game
+</button>
             </>
           )}
 
