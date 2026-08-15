@@ -513,6 +513,8 @@ export default function DeepzTheGreat() {
             selectedLevel: null,
             challenge: null,
             chat: {},
+            
+            history: {},
           };
         });
 
@@ -852,26 +854,54 @@ export default function DeepzTheGreat() {
   ========================================================= */
 
   const completeTurn = async () => {
-    try {
-      if (!room) return;
+  try {
+    if (!room) return;
 
-      if (room.currentTurn !== playerId) {
-        return;
-      }
+    if (room.currentTurn !== playerId) {
+      return;
+    }
 
-      const nextTurn =
-        room.currentTurn === "p1"
-          ? "p2"
-          : "p1";
+    // Save the current question/dare to history
+    if (room.challenge?.text) {
+      const historyRef = ref(
+        db,
+        `rooms/${roomCode}/history`
+      );
 
-      await update(ref(db, `rooms/${roomCode}`), {
+      const newHistory = push(historyRef);
+
+      await set(newHistory, {
+        type: room.challenge.type,
+        text: room.challenge.text,
+        source: room.challenge.source || "generated",
+        player: playerId,
+        playerName:
+          room?.players?.[playerId]?.name ||
+          playerName.trim(),
+        timestamp: Date.now(),
+      });
+    }
+
+    const nextTurn =
+      room.currentTurn === "p1"
+        ? "p2"
+        : "p1";
+
+    await update(
+      ref(db, `rooms/${roomCode}`),
+      {
         currentTurn: nextTurn,
         challenge: null,
-      });
-    } catch (error) {
-      console.error(error);
-    }
-  };
+      }
+    );
+  } catch (error) {
+    console.error("HISTORY ERROR:", error);
+
+    alert(
+      `Could not save history.\n${error.message}`
+    );
+  }
+};
 
   /* =========================================================
      CHAT
@@ -919,21 +949,34 @@ export default function DeepzTheGreat() {
   /* =========================================================
      CHAT MESSAGES
   ========================================================= */
+const messages = useMemo(() => {
+  if (!room?.chat) return [];
 
-  const messages = useMemo(() => {
-    if (!room?.chat) return [];
+  return Object.entries(room.chat)
+    .map(([id, message]) => ({
+      id,
+      ...message,
+    }))
+    .sort(
+      (a, b) =>
+        (a.timestamp || 0) -
+        (b.timestamp || 0)
+    );
+}, [room?.chat]);
+  const history = useMemo(() => {
+  if (!room?.history) return [];
 
-    return Object.entries(room.chat)
-      .map(([id, message]) => ({
-        id,
-        ...message,
-      }))
-      .sort(
-        (a, b) =>
-          (a.timestamp || 0) -
-          (b.timestamp || 0)
-      );
-  }, [room?.chat]);
+  return Object.entries(room.history)
+    .map(([id, item]) => ({
+      id,
+      ...item,
+    }))
+    .sort(
+      (a, b) =>
+        (b.timestamp || 0) -
+        (a.timestamp || 0)
+    );
+}, [room?.history]);
 
   /* =========================================================
      COPY LINK
@@ -1626,6 +1669,62 @@ export default function DeepzTheGreat() {
   setShowEmojiPicker={setShowEmojiPicker}
   addEmoji={addEmoji}
 />
+<div className="mt-5 bg-white/90 rounded-3xl shadow-xl border border-purple-100 p-5">
+
+  <div className="flex items-center gap-2 mb-4">
+    <span className="text-xl">📜</span>
+
+    <h3 className="font-bold text-lg">
+      Game History
+    </h3>
+  </div>
+
+  {history.length === 0 ? (
+    <div className="text-center text-purple-300 text-sm py-6">
+      No questions yet 💜
+    </div>
+  ) : (
+    <div className="space-y-3 max-h-80 overflow-y-auto">
+
+      {history.map((item, index) => (
+        <div
+          key={item.id}
+          className={
+            item.type === "truth"
+              ? "bg-purple-50 rounded-2xl p-4"
+              : "bg-red-50 rounded-2xl p-4"
+          }
+        >
+
+          <div className="flex items-center justify-between mb-2">
+
+            <span className="text-xs font-bold uppercase">
+              {item.type === "truth"
+                ? "🟣 Truth"
+                : "🔴 Dare"}
+            </span>
+
+            <span className="text-xs text-purple-300">
+              #{history.length - index}
+            </span>
+
+          </div>
+
+          <p className="text-sm font-semibold leading-relaxed">
+            {item.text}
+          </p>
+
+          <div className="text-xs text-purple-400 mt-2">
+            Answered by {item.playerName}
+          </div>
+
+        </div>
+      ))}
+
+    </div>
+  )}
+
+</div>
             </>
           )}
 
