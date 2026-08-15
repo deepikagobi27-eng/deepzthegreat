@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import { useRouter } from "next/router";
+
 import {
   Copy,
   Check,
@@ -13,18 +14,20 @@ import {
   Pencil,
   Users,
 } from "lucide-react";
-import { db } from "../lib/firebase";
+
 import {
   onValue,
   ref,
   set,
   update,
   push,
+  runTransaction,
 } from "firebase/database";
 
+import { db } from "../lib/firebase";
+
 /* =========================================================
-   QUESTION DATA
-   20 TRUTH + 20 DARE FOR EACH LEVEL
+   GAME DATA
 ========================================================= */
 
 const GAME_DATA = {
@@ -198,7 +201,18 @@ const EMOJIS = [
 ];
 
 /* =========================================================
-   MAIN APP
+   HELPERS
+========================================================= */
+
+function makeRoomCode() {
+  return Math.random()
+    .toString(36)
+    .substring(2, 8)
+    .toUpperCase();
+}
+
+/* =========================================================
+   APP
 ========================================================= */
 
 export default function DeepzTheGreat() {
@@ -211,339 +225,573 @@ export default function DeepzTheGreat() {
   const [screen, setScreen] = useState("home");
   const [room, setRoom] = useState(null);
 
-  const [selectedLevel, setSelectedLevel] = useState(null);
+  const [selectedLevel, setSelectedLevel] = useState("");
 
-  const [challengeType, setChallengeType] = useState(null);
   const [customText, setCustomText] = useState("");
-
   const [chatText, setChatText] = useState("");
+
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-
   const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  /* -------------------------------------------------------
-     LOAD SAVED PLAYER
-  ------------------------------------------------------- */
+  /* =========================================================
+     INITIALIZE FROM URL / LOCAL STORAGE
+  ========================================================= */
 
   useEffect(() => {
     if (!router.isReady) return;
 
-    const queryRoom = router.query.room;
-
-    if (queryRoom) {
-      setRoomCode(String(queryRoom).toUpperCase());
-      setScreen("join");
-    }
+    const urlRoom = router.query.room;
 
     const savedPlayer = localStorage.getItem("deepz-player-id");
     const savedRoom = localStorage.getItem("deepz-room-code");
+    const savedName = localStorage.getItem("deepz-player-name");
+
+    if (savedName) {
+      setPlayerName(savedName);
+    }
+
+    if (urlRoom) {
+      const code = String(urlRoom).toUpperCase();
+
+      setRoomCode(code);
+
+      /*
+       * If this browser already belongs to this room,
+       * restore its player.
+       */
+      if (savedPlayer && savedRoom === code) {
+        setPlayerId(savedPlayer);
+        setScreen("lobby");
+      } else {
+        /*
+         * New browser/device joining through share link.
+         */
+        setPlayerId("");
+        setScreen("join");
+      }
+
+      return;
+    }
 
     if (savedPlayer && savedRoom) {
       setPlayerId(savedPlayer);
       setRoomCode(savedRoom);
+      setScreen("lobby");
     }
   }, [router.isReady, router.query.room]);
 
-  /* -------------------------------------------------------
-     LISTEN TO ROOM IN REAL TIME
-  ------------------------------------------------------- */
+  /* =========================================================
+     REALTIME ROOM LISTENER
+  ========================================================= */
 
   useEffect(() => {
     if (!roomCode) return;
 
     const roomRef = ref(db, `rooms/${roomCode}`);
 
-    const unsubscribe = onValue(roomRef, (snapshot) => {
-      const data = snapshot.val();
+    const unsubscribe = onValue(
+      roomRef,
+      (snapshot) => {
+        const data = snapshot.val();
 
-      if (!data) return;
+        console.log("ROOM UPDATE:", data);
 
-      setRoom(data);
+        if (!data) {
+          setRoom(null);
 
-      if (data.status === "lobby") {
-        setScreen("lobby");
-      }
+          if (playerId) {
+            setScreen("home");
+          }
 
-      if (data.status === "playing") {
-        setScreen("game");
-      }
-    });
-
-    return () => unsubscribe();
-  }, [roomCode]);
-
-  /* -------------------------------------------------------
-     CREATE ROOM
-  ------------------------------------------------------- */
-
-  const createRoom = async () => {
-    if (!playerName.trim()) {
-      alert("Please enter your name.");
-      return;
-    }
-
-    const code = Math.random()
-      .toString(36)
-      .substring(2, 8)
-      .toUpperCase();
-
-    const newRoom = {
-      status: "lobby",
-
-      createdAt: Date.now(),
-
-      players: {
-        p1: {
-          name: playerName.trim(),
-        },
-      },
-
-      currentTurn: "p1",
-
-      selectedLevel: null,
-
-      challenge: null,
-
-      chat: {},
-    };
-
-    await set(ref(db, `rooms/${code}`), newRoom);
-
-    localStorage.setItem("deepz-player-id", "p1");
-    localStorage.setItem("deepz-room-code", code);
-
-    setPlayerId("p1");
-    setRoomCode(code);
-
-    setScreen("lobby");
-
-    router.push(`/?room=${code}`, undefined, {
-      shallow: true,
-    });
-  };
-
-  /* -------------------------------------------------------
-     JOIN ROOM
-  ------------------------------------------------------- */
-
-  const joinRoom = async () => {
-    if (!playerName.trim()) {
-      alert("Please enter your name.");
-      return;
-    }
-
-    if (!roomCode.trim()) {
-      alert("Enter the room code.");
-      return;
-    }
-
-    const code = roomCode.trim().toUpperCase();
-
-    const roomRef = ref(db, `rooms/${code}`);
-
-    const snapshot = await new Promise((resolve) => {
-      onValue(
-        roomRef,
-        resolve,
-        {
-          onlyOnce: true,
+          return;
         }
-      );
-    });
 
-    const data = snapshot.val();
+        setRoom(data);
 
-    if (!data) {
-      alert("Room not found.");
-      return;
-    }
+        /*
+         * Keep selected level in local React state too.
+         */
+        if (data.selectedLevel) {
+          setSelectedLevel(data.selectedLevel);
+        }
 
-    if (data.players?.p2) {
-      alert("This room already has two players.");
-      return;
-    }
+        /*
+         * Only automatically change screen if this browser
+         * is already one of the two players.
+         */
+        if (playerId === "p1" || playerId === "p2") {
+          if (data.status === "lobby") {
+            setScreen("lobby");
+          }
 
-    await update(roomRef, {
-      "players/p2": {
-        name: playerName.trim(),
+          if (data.status === "playing") {
+            setScreen("game");
+          }
+        }
       },
-    });
+      (error) => {
+        console.error("ROOM LISTENER ERROR:", error);
 
-    localStorage.setItem("deepz-player-id", "p2");
-    localStorage.setItem("deepz-room-code", code);
-
-    setPlayerId("p2");
-    setRoomCode(code);
-    setScreen("lobby");
-  };
-
-  /* -------------------------------------------------------
-     START GAME
-  ------------------------------------------------------- */
-
-  const startGame = async () => {
-    if (!room?.players?.p1 || !room?.players?.p2) {
-      alert("Waiting for Player 2 to join.");
-      return;
-    }
-
-    if (!selectedLevel) {
-      alert("Choose a level first.");
-      return;
-    }
-
-    await update(ref(db, `rooms/${roomCode}`), {
-      status: "playing",
-      selectedLevel,
-      currentTurn: "p1",
-      challenge: null,
-    });
-  };
-
-  /* -------------------------------------------------------
-     CHOOSE LEVEL
-  ------------------------------------------------------- */
-
-  const chooseLevel = (level) => {
-    setSelectedLevel(level);
-  };
-
-  /* -------------------------------------------------------
-     TRUTH / DARE
-  ------------------------------------------------------- */
-
-  const chooseTruthOrDare = async (type) => {
-    if (!room) return;
-
-    await update(ref(db, `rooms/${roomCode}`), {
-      challenge: {
-        type,
-        level: room.selectedLevel,
-        stage: "choose-source",
-        source: null,
-        text: "",
-        createdBy: playerId,
-      },
-    });
-  };
-
-  /* -------------------------------------------------------
-     GENERATED QUESTION / DARE
-  ------------------------------------------------------- */
-
-  const chooseGenerated = async () => {
-    const challenge = room?.challenge;
-
-    if (!challenge) return;
-
-    const list =
-      GAME_DATA[challenge.level][
-        challenge.type === "truth"
-          ? "truths"
-          : "dares"
-      ];
-
-    const randomIndex = Math.floor(
-      Math.random() * list.length
+        alert(
+          `Firebase error:\n${error.code}\n${error.message}`
+        );
+      }
     );
 
-    const randomChallenge = list[randomIndex];
+    return () => unsubscribe();
+  }, [roomCode, playerId]);
 
-    await update(ref(db, `rooms/${roomCode}`), {
-      challenge: {
-        ...challenge,
-        stage: "active",
-        source: "generated",
-        text: randomChallenge,
-      },
-    });
+  /* =========================================================
+     CREATE ROOM
+  ========================================================= */
+
+  const createRoom = async () => {
+    try {
+      if (!playerName.trim()) {
+        alert("Please enter your name.");
+        return;
+      }
+
+      setLoading(true);
+
+      let code = "";
+      let created = false;
+
+      /*
+       * Try several random room codes.
+       * This prevents accidentally overwriting an existing room.
+       */
+      for (let i = 0; i < 10; i++) {
+        const possibleCode = makeRoomCode();
+
+        const roomRef = ref(db, `rooms/${possibleCode}`);
+
+        const result = await runTransaction(roomRef, (current) => {
+          if (current !== null) {
+            return;
+          }
+
+          return {
+            status: "lobby",
+            createdAt: Date.now(),
+
+            players: {
+              p1: {
+                name: playerName.trim(),
+              },
+            },
+
+            currentTurn: "p1",
+            selectedLevel: null,
+            challenge: null,
+            chat: {},
+          };
+        });
+
+        if (result.committed) {
+          code = possibleCode;
+          created = true;
+          break;
+        }
+      }
+
+      if (!created) {
+        throw new Error(
+          "Could not generate a unique room code. Please try again."
+        );
+      }
+
+      localStorage.setItem("deepz-player-id", "p1");
+      localStorage.setItem("deepz-room-code", code);
+      localStorage.setItem(
+        "deepz-player-name",
+        playerName.trim()
+      );
+
+      setPlayerId("p1");
+      setRoomCode(code);
+      setSelectedLevel("");
+      setScreen("lobby");
+
+      await router.push(
+        `/?room=${code}`,
+        undefined,
+        { shallow: true }
+      );
+    } catch (error) {
+      console.error("CREATE ROOM ERROR:", error);
+
+      alert(
+        `Could not create room.\n\n${error.code || ""}\n${
+          error.message || error
+        }`
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
-  /* -------------------------------------------------------
-     CUSTOM
-  ------------------------------------------------------- */
+  /* =========================================================
+     JOIN ROOM
+  ========================================================= */
+
+  const joinRoom = async () => {
+    try {
+      if (!playerName.trim()) {
+        alert("Please enter your name.");
+        return;
+      }
+
+      const code = roomCode.trim().toUpperCase();
+
+      if (!code) {
+        alert("Enter the room code.");
+        return;
+      }
+
+      setLoading(true);
+
+      console.log("JOINING:", code);
+
+      const roomRef = ref(db, `rooms/${code}`);
+
+      /*
+       * Atomically claim p2.
+       *
+       * This is much safer than:
+       *
+       *   read room
+       *   check p2
+       *   update p2
+       *
+       * because two people could otherwise try to join
+       * simultaneously.
+       */
+      const result = await runTransaction(
+        roomRef,
+        (current) => {
+          if (current === null) {
+            return;
+          }
+
+          if (current.status === "playing") {
+            return;
+          }
+
+          if (
+            current.players &&
+            current.players.p2
+          ) {
+            return;
+          }
+
+          return {
+            ...current,
+
+            players: {
+              ...(current.players || {}),
+
+              p2: {
+                name: playerName.trim(),
+              },
+            },
+          };
+        }
+      );
+
+      if (!result.committed) {
+        const current = result.snapshot.val();
+
+        if (!current) {
+          alert("Room not found.");
+          return;
+        }
+
+        if (current.status === "playing") {
+          alert("The game has already started.");
+          return;
+        }
+
+        if (current.players?.p2) {
+          alert("This room already has Player 2.");
+          return;
+        }
+
+        alert("Could not join the room. Please try again.");
+        return;
+      }
+
+      console.log("PLAYER 2 ADDED!");
+
+      localStorage.setItem("deepz-player-id", "p2");
+      localStorage.setItem("deepz-room-code", code);
+      localStorage.setItem(
+        "deepz-player-name",
+        playerName.trim()
+      );
+
+      setPlayerId("p2");
+      setRoomCode(code);
+      setScreen("lobby");
+
+      /*
+       * Make sure URL contains the room.
+       */
+      await router.push(
+        `/?room=${code}`,
+        undefined,
+        { shallow: true }
+      );
+    } catch (error) {
+      console.error("JOIN ROOM ERROR:", error);
+
+      alert(
+        `Could not join room.\n\n${
+          error.code || "ERROR"
+        }\n\n${error.message || error}`
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /* =========================================================
+     START GAME
+  ========================================================= */
+
+  const startGame = async () => {
+    try {
+      if (playerId !== "p1") {
+        return;
+      }
+
+      if (!room?.players?.p1) {
+        alert("Player 1 is missing.");
+        return;
+      }
+
+      if (!room?.players?.p2) {
+        alert("Waiting for Player 2 to join.");
+        return;
+      }
+
+      if (!selectedLevel) {
+        alert("Choose a level first.");
+        return;
+      }
+
+      await update(ref(db, `rooms/${roomCode}`), {
+        status: "playing",
+        selectedLevel,
+        currentTurn: "p1",
+        challenge: null,
+      });
+    } catch (error) {
+      console.error("START GAME ERROR:", error);
+
+      alert(
+        `Could not start game.\n${error.message}`
+      );
+    }
+  };
+
+  /* =========================================================
+     CHOOSE TRUTH / DARE
+  ========================================================= */
+
+  const chooseTruthOrDare = async (type) => {
+    try {
+      if (!room) return;
+
+      if (room.currentTurn !== playerId) {
+        return;
+      }
+
+      await update(ref(db, `rooms/${roomCode}`), {
+        challenge: {
+          type,
+          level: room.selectedLevel,
+          stage: "choose-source",
+          source: null,
+          text: "",
+          createdBy: playerId,
+        },
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  /* =========================================================
+     GENERATED CHALLENGE
+  ========================================================= */
+
+  const chooseGenerated = async () => {
+    try {
+      const challenge = room?.challenge;
+
+      if (!challenge) return;
+
+      if (challenge.createdBy === playerId) {
+        return;
+      }
+
+      const list =
+        GAME_DATA[challenge.level]?.[
+          challenge.type === "truth"
+            ? "truths"
+            : "dares"
+        ];
+
+      if (!list || list.length === 0) {
+        alert("No challenges available.");
+        return;
+      }
+
+      const randomIndex = Math.floor(
+        Math.random() * list.length
+      );
+
+      const randomChallenge = list[randomIndex];
+
+      await update(ref(db, `rooms/${roomCode}`), {
+        challenge: {
+          ...challenge,
+          stage: "active",
+          source: "generated",
+          text: randomChallenge,
+        },
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  /* =========================================================
+     CUSTOM CHALLENGE
+  ========================================================= */
 
   const chooseCustom = async () => {
-    if (!room?.challenge) return;
+    try {
+      if (!room?.challenge) return;
 
-    await update(ref(db, `rooms/${roomCode}`), {
-      challenge: {
-        ...room.challenge,
-        stage: "custom",
-        source: "custom",
-      },
-    });
+      if (
+        room.challenge.createdBy === playerId
+      ) {
+        return;
+      }
 
-    setCustomText("");
+      await update(ref(db, `rooms/${roomCode}`), {
+        challenge: {
+          ...room.challenge,
+          stage: "custom",
+          source: "custom",
+        },
+      });
+
+      setCustomText("");
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const submitCustom = async () => {
-    if (!customText.trim()) {
-      alert("Write something first.");
-      return;
+    try {
+      if (!customText.trim()) {
+        alert("Write something first.");
+        return;
+      }
+
+      if (!room?.challenge) return;
+
+      await update(ref(db, `rooms/${roomCode}`), {
+        challenge: {
+          ...room.challenge,
+          stage: "active",
+          source: "custom",
+          text: customText.trim(),
+        },
+      });
+
+      setCustomText("");
+    } catch (error) {
+      console.error(error);
     }
-
-    await update(ref(db, `rooms/${roomCode}`), {
-      challenge: {
-        ...room.challenge,
-        stage: "active",
-        source: "custom",
-        text: customText.trim(),
-      },
-    });
-
-    setCustomText("");
   };
 
-  /* -------------------------------------------------------
+  /* =========================================================
      COMPLETE TURN
-  ------------------------------------------------------- */
+  ========================================================= */
 
   const completeTurn = async () => {
-    const nextTurn =
-      room.currentTurn === "p1"
-        ? "p2"
-        : "p1";
+    try {
+      if (!room) return;
 
-    await update(ref(db, `rooms/${roomCode}`), {
-      currentTurn: nextTurn,
-      challenge: null,
-    });
+      if (room.currentTurn !== playerId) {
+        return;
+      }
+
+      const nextTurn =
+        room.currentTurn === "p1"
+          ? "p2"
+          : "p1";
+
+      await update(ref(db, `rooms/${roomCode}`), {
+        currentTurn: nextTurn,
+        challenge: null,
+      });
+    } catch (error) {
+      console.error(error);
+    }
   };
 
-  /* -------------------------------------------------------
+  /* =========================================================
      CHAT
-  ------------------------------------------------------- */
+  ========================================================= */
 
   const sendMessage = async () => {
-    if (!chatText.trim()) return;
+    try {
+      if (!chatText.trim()) return;
 
-    const chatRef = ref(
-      db,
-      `rooms/${roomCode}/chat`
-    );
+      if (!roomCode || !playerId) return;
 
-    const newMessage = push(chatRef);
+      const chatRef = ref(
+        db,
+        `rooms/${roomCode}/chat`
+      );
 
-    await set(newMessage, {
-      sender: playerId,
-      senderName:
-        room?.players?.[playerId]?.name ||
-        playerName,
-      text: chatText.trim(),
-      timestamp: Date.now(),
-    });
+      const newMessage = push(chatRef);
 
-    setChatText("");
+      await set(newMessage, {
+        sender: playerId,
+
+        senderName:
+          room?.players?.[playerId]?.name ||
+          playerName.trim(),
+
+        text: chatText.trim(),
+
+        timestamp: Date.now(),
+      });
+
+      setChatText("");
+    } catch (error) {
+      console.error("CHAT ERROR:", error);
+
+      alert(
+        `Could not send message.\n${error.message}`
+      );
+    }
   };
 
   const addEmoji = (emoji) => {
     setChatText((old) => old + emoji);
   };
 
-  /* -------------------------------------------------------
+  /* =========================================================
      CHAT MESSAGES
-  ------------------------------------------------------- */
+  ========================================================= */
 
   const messages = useMemo(() => {
     if (!room?.chat) return [];
@@ -554,43 +802,88 @@ export default function DeepzTheGreat() {
         ...message,
       }))
       .sort(
-        (a, b) => a.timestamp - b.timestamp
+        (a, b) =>
+          (a.timestamp || 0) -
+          (b.timestamp || 0)
       );
   }, [room?.chat]);
 
-  /* -------------------------------------------------------
+  /* =========================================================
      COPY LINK
-  ------------------------------------------------------- */
+  ========================================================= */
 
   const copyLink = async () => {
-    const link =
-      `${window.location.origin}/?room=${roomCode}`;
+    try {
+      const link =
+        `${window.location.origin}/?room=${roomCode}`;
 
-    await navigator.clipboard.writeText(link);
+      await navigator.clipboard.writeText(link);
 
-    setCopied(true);
+      setCopied(true);
 
-    setTimeout(() => {
-      setCopied(false);
-    }, 2000);
+      setTimeout(() => {
+        setCopied(false);
+      }, 2000);
+    } catch (error) {
+      console.error(error);
+
+      alert(
+        "Could not copy the link. Please copy the room code manually."
+      );
+    }
+  };
+
+  /* =========================================================
+     LEAVE / RESET
+  ========================================================= */
+
+  const leaveRoom = () => {
+    localStorage.removeItem("deepz-player-id");
+    localStorage.removeItem("deepz-room-code");
+    localStorage.removeItem("deepz-player-name");
+
+    setPlayerId("");
+    setRoomCode("");
+    setRoom(null);
+    setSelectedLevel("");
+    setScreen("home");
+
+    router.push("/", undefined, {
+      shallow: true,
+    });
   };
 
   /* =========================================================
      CHAT COMPONENT
   ========================================================= */
 
-  const ChatBox = () => (
+
+
+const ChatBox = () => {
+  const inputRef = React.useRef(null);
+
+  const handleSend = async () => {
+    await sendMessage();
+
+    // Keep the cursor in the input after sending
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
+  };
+
+  return (
     <div className="mt-5 bg-white/90 rounded-3xl shadow-xl border border-purple-100 p-4">
 
+      {/* CHAT HEADER */}
       <div className="flex items-center gap-2 mb-3">
         <MessageCircle size={20} />
+
         <h3 className="font-bold">
           Chat
         </h3>
       </div>
 
       {/* MESSAGES */}
-
       <div className="h-44 overflow-y-auto bg-purple-50 rounded-2xl p-3 space-y-2">
 
         {messages.length === 0 && (
@@ -629,13 +922,16 @@ export default function DeepzTheGreat() {
       </div>
 
       {/* EMOJI PICKER */}
-
       {showEmojiPicker && (
         <div className="flex flex-wrap gap-2 mt-3 bg-purple-50 rounded-2xl p-3">
           {EMOJIS.map((emoji) => (
             <button
               key={emoji}
-              onClick={() => addEmoji(emoji)}
+              type="button"
+              onClick={() => {
+                addEmoji(emoji);
+                inputRef.current?.focus();
+              }}
               className="text-2xl hover:scale-125 transition"
             >
               {emoji}
@@ -644,15 +940,13 @@ export default function DeepzTheGreat() {
         </div>
       )}
 
-      {/* CHAT INPUT */}
-
+      {/* INPUT AREA */}
       <div className="flex gap-2 mt-3">
 
         <button
+          type="button"
           onClick={() =>
-            setShowEmojiPicker(
-              !showEmojiPicker
-            )
+            setShowEmojiPicker(!showEmojiPicker)
           }
           className="w-11 h-11 flex-shrink-0 rounded-xl bg-purple-100"
         >
@@ -660,29 +954,36 @@ export default function DeepzTheGreat() {
         </button>
 
         <input
+          ref={inputRef}
+          type="text"
           value={chatText}
-          onChange={(e) =>
-            setChatText(e.target.value)
-          }
+          onChange={(e) => {
+            setChatText(e.target.value);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
-              sendMessage();
+              e.preventDefault();
+              handleSend();
             }
           }}
           placeholder="Type a message..."
-          className="flex-1 min-w-0 bg-purple-50 rounded-xl px-3 outline-none focus:ring-2 focus:ring-purple-300"
+          autoComplete="off"
+          className="flex-1 min-w-0 bg-purple-50 rounded-xl px-3 py-3 outline-none focus:ring-2 focus:ring-purple-300"
         />
 
         <button
-          onClick={sendMessage}
+          type="button"
+          onClick={handleSend}
           className="w-11 h-11 flex-shrink-0 rounded-xl bg-purple-600 text-white flex items-center justify-center"
         >
           <Send size={18} />
         </button>
 
       </div>
+
     </div>
   );
+};
 
   /* =========================================================
      PAGE
@@ -691,9 +992,7 @@ export default function DeepzTheGreat() {
   return (
     <>
       <Head>
-        <title>
-          Deepz The Great
-        </title>
+        <title>Deepz The Great</title>
 
         <meta
           name="viewport"
@@ -731,20 +1030,26 @@ export default function DeepzTheGreat() {
               </label>
 
               <input
-  type="text"
-  value={playerName}
-  onChange={(e) => setPlayerName(e.target.value)}
-  placeholder="Enter your name..."
-  autoComplete="off"
-  className="w-full mt-2 bg-purple-50 rounded-2xl px-4 py-4 outline-none focus:ring-2 focus:ring-purple-300"
-/>
+                type="text"
+                value={playerName}
+                onChange={(e) =>
+                  setPlayerName(e.target.value)
+                }
+                placeholder="Enter your name..."
+                autoComplete="off"
+                className="w-full mt-2 bg-purple-50 rounded-2xl px-4 py-4 outline-none focus:ring-2 focus:ring-purple-300"
+              />
 
               <button
                 onClick={createRoom}
-                className="w-full mt-5 bg-purple-600 text-white font-bold py-4 rounded-2xl flex justify-center gap-2"
+                disabled={loading}
+                className="w-full mt-5 bg-purple-600 disabled:bg-purple-300 text-white font-bold py-4 rounded-2xl flex justify-center gap-2"
               >
                 <Play size={19} />
-                Create Game
+
+                {loading
+                  ? "Creating..."
+                  : "Create Game"}
               </button>
 
               <div className="text-center text-purple-300 my-4">
@@ -755,7 +1060,10 @@ export default function DeepzTheGreat() {
                 value={roomCode}
                 onChange={(e) =>
                   setRoomCode(
-                    e.target.value.toUpperCase()
+                    e.target.value
+                      .toUpperCase()
+                      .replace(/[^A-Z0-9]/g, "")
+                      .slice(0, 6)
                   )
                 }
                 placeholder="ROOM CODE"
@@ -764,10 +1072,14 @@ export default function DeepzTheGreat() {
 
               <button
                 onClick={joinRoom}
-                className="w-full mt-3 border-2 border-purple-600 text-purple-600 font-bold py-4 rounded-2xl flex justify-center gap-2"
+                disabled={loading}
+                className="w-full mt-3 border-2 border-purple-600 disabled:border-purple-200 disabled:text-purple-300 text-purple-600 font-bold py-4 rounded-2xl flex justify-center gap-2"
               >
                 <UserPlus size={19} />
-                Join Game
+
+                {loading
+                  ? "Joining..."
+                  : "Join Game"}
               </button>
 
             </div>
@@ -781,7 +1093,13 @@ export default function DeepzTheGreat() {
             <div className="bg-white/90 rounded-3xl shadow-xl p-6">
 
               <button
-                onClick={() => setScreen("home")}
+                onClick={() => {
+                  setScreen("home");
+                  setRoomCode("");
+                  router.push("/", undefined, {
+                    shallow: true,
+                  });
+                }}
                 className="mb-5"
               >
                 <ArrowLeft />
@@ -792,7 +1110,8 @@ export default function DeepzTheGreat() {
               </h2>
 
               <p className="text-purple-400 mt-2">
-                Room: {roomCode}
+                Room:{" "}
+                <strong>{roomCode}</strong>
               </p>
 
               <input
@@ -801,14 +1120,18 @@ export default function DeepzTheGreat() {
                   setPlayerName(e.target.value)
                 }
                 placeholder="Your name..."
+                autoComplete="off"
                 className="w-full mt-5 bg-purple-50 rounded-2xl px-4 py-4 outline-none"
               />
 
               <button
                 onClick={joinRoom}
-                className="w-full mt-4 bg-purple-600 text-white font-bold py-4 rounded-2xl"
+                disabled={loading}
+                className="w-full mt-4 bg-purple-600 disabled:bg-purple-300 text-white font-bold py-4 rounded-2xl"
               >
-                Join Now
+                {loading
+                  ? "Joining..."
+                  : "Join Now"}
               </button>
 
             </div>
@@ -862,11 +1185,9 @@ export default function DeepzTheGreat() {
 
                 <div className="bg-purple-50 rounded-2xl p-4 text-center">
 
-                  <Users
-                    className="mx-auto text-purple-500"
-                  />
+                  <Users className="mx-auto text-purple-500" />
 
-                  <p className="font-bold mt-2">
+                  <p className="font-bold mt-2 break-words">
                     {room.players?.p1?.name ||
                       "Waiting..."}
                   </p>
@@ -877,13 +1198,23 @@ export default function DeepzTheGreat() {
 
                 </div>
 
-                <div className="bg-purple-50 rounded-2xl p-4 text-center">
+                <div
+                  className={
+                    room.players?.p2
+                      ? "bg-green-50 rounded-2xl p-4 text-center"
+                      : "bg-purple-50 rounded-2xl p-4 text-center"
+                  }
+                >
 
                   <Users
-                    className="mx-auto text-purple-500"
+                    className={
+                      room.players?.p2
+                        ? "mx-auto text-green-500"
+                        : "mx-auto text-purple-500"
+                    }
                   />
 
-                  <p className="font-bold mt-2">
+                  <p className="font-bold mt-2 break-words">
                     {room.players?.p2?.name ||
                       "Waiting..."}
                   </p>
@@ -896,6 +1227,14 @@ export default function DeepzTheGreat() {
 
               </div>
 
+              {/* PLAYER 2 CONNECTED */}
+
+              {room.players?.p2 && (
+                <div className="mt-5 bg-green-100 text-green-700 rounded-2xl p-3 text-center font-bold">
+                  ✅ Player 2 has joined!
+                </div>
+              )}
+
               {/* LEVEL */}
 
               {playerId === "p1" && (
@@ -906,15 +1245,20 @@ export default function DeepzTheGreat() {
 
                   <div className="space-y-2">
 
-                    {Object.entries(GAME_DATA).map(
+                    {Object.entries(
+                      GAME_DATA
+                    ).map(
                       ([key, level]) => (
                         <button
                           key={key}
                           onClick={() =>
-                            chooseLevel(key)
+                            setSelectedLevel(
+                              key
+                            )
                           }
                           className={
-                            selectedLevel === key
+                            selectedLevel ===
+                            key
                               ? "w-full p-4 rounded-2xl bg-purple-600 text-white font-bold"
                               : "w-full p-4 rounded-2xl bg-purple-50 font-bold"
                           }
@@ -931,7 +1275,8 @@ export default function DeepzTheGreat() {
                     onClick={startGame}
                     disabled={
                       !room.players?.p2 ||
-                      !selectedLevel
+                      !selectedLevel ||
+                      loading
                     }
                     className="w-full mt-5 bg-purple-600 disabled:bg-purple-200 text-white font-bold py-4 rounded-2xl"
                   >
@@ -942,13 +1287,23 @@ export default function DeepzTheGreat() {
 
               {playerId === "p2" && (
                 <div className="text-center mt-7 text-purple-400">
+
                   <div className="text-4xl mb-3">
                     ⏳
                   </div>
 
-                  Waiting for Player 1 to choose the level...
+                  Waiting for Player 1 to choose
+                  the level...
+
                 </div>
               )}
+
+              <button
+                onClick={leaveRoom}
+                className="w-full mt-5 text-sm text-red-400"
+              >
+                Leave Room
+              </button>
 
             </div>
           )}
@@ -966,13 +1321,20 @@ export default function DeepzTheGreat() {
                 <div className="text-center">
 
                   <div className="text-sm text-purple-400 font-bold">
-                    {GAME_DATA[
-                      room.selectedLevel
-                    ]?.emoji}{" "}
-                    {GAME_DATA[
-                      room.selectedLevel
-                    ]?.name}{" "}
+
+                    {
+                      GAME_DATA[
+                        room.selectedLevel
+                      ]?.emoji
+                    }{" "}
+
+                    {
+                      GAME_DATA[
+                        room.selectedLevel
+                      ]?.name
+                    }{" "}
                     Level
+
                   </div>
 
                   <h2 className="text-2xl font-black mt-2">
@@ -983,7 +1345,8 @@ export default function DeepzTheGreat() {
                       : `${
                           room.players?.[
                             room.currentTurn
-                          ]?.name
+                          ]?.name ||
+                          "Other player"
                         }'s Turn`}
 
                   </h2>
@@ -1078,8 +1441,8 @@ export default function DeepzTheGreat() {
                       </h2>
 
                       <p className="text-sm text-purple-400 mt-2">
-                        Pick a built-in one or create
-                        your own.
+                        Pick a built-in one or
+                        create your own.
                       </p>
 
                     </div>
@@ -1094,15 +1457,21 @@ export default function DeepzTheGreat() {
                           }
                           className="w-full bg-purple-600 text-white font-bold py-5 rounded-2xl flex justify-center items-center gap-2"
                         >
-                          <Sparkles size={20} />
+                          <Sparkles
+                            size={20}
+                          />
                           Generated
                         </button>
 
                         <button
-                          onClick={chooseCustom}
+                          onClick={
+                            chooseCustom
+                          }
                           className="w-full border-2 border-purple-600 text-purple-600 font-bold py-5 rounded-2xl flex justify-center items-center gap-2"
                         >
-                          <Pencil size={20} />
+                          <Pencil
+                            size={20}
+                          />
                           Create My Own
                         </button>
 
@@ -1112,12 +1481,14 @@ export default function DeepzTheGreat() {
                     {room.challenge.createdBy ===
                       playerId && (
                       <div className="text-center py-8 text-purple-400">
+
                         <div className="text-4xl mb-3">
                           ⏳
                         </div>
 
-                        Waiting for the other player
-                        to choose...
+                        Waiting for the other
+                        player to choose...
+
                       </div>
                     )}
 
@@ -1171,12 +1542,14 @@ export default function DeepzTheGreat() {
                   room.challenge.createdBy ===
                     playerId && (
                     <div className="text-center py-10 text-purple-400">
+
                       <div className="text-4xl mb-3">
                         ✏️
                       </div>
 
                       The other player is creating
                       your challenge...
+
                     </div>
                   )}
 
@@ -1237,7 +1610,8 @@ export default function DeepzTheGreat() {
                           room.players?.[
                             room.currentTurn
                           ]?.name
-                        }...
+                        }
+                        ...
                       </p>
                     )}
 
@@ -1245,10 +1619,6 @@ export default function DeepzTheGreat() {
                 )}
 
               </div>
-
-              {/* =================================================
-                  CHAT
-              ================================================= */}
 
               <ChatBox />
             </>
