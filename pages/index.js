@@ -214,7 +214,134 @@ function makeRoomCode() {
 /* =========================================================
    APP
 ========================================================= */
+/* =========================================================
+   CHAT COMPONENT
+========================================================= */
 
+function ChatBox({
+  messages,
+  playerId,
+  chatText,
+  setChatText,
+  sendMessage,
+  showEmojiPicker,
+  setShowEmojiPicker,
+  addEmoji,
+}) {
+  const inputRef = React.useRef(null);
+
+  const handleSend = async () => {
+    await sendMessage();
+
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
+  };
+
+  return (
+    <div className="mt-5 bg-white/90 rounded-3xl shadow-xl border border-purple-100 p-4">
+
+      <div className="flex items-center gap-2 mb-3">
+        <MessageCircle size={20} />
+        <h3 className="font-bold">Chat</h3>
+      </div>
+
+      <div className="h-44 overflow-y-auto bg-purple-50 rounded-2xl p-3 space-y-2">
+
+        {messages.length === 0 && (
+          <div className="text-center text-purple-300 text-sm pt-14">
+            Start chatting 💬
+          </div>
+        )}
+
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={
+              message.sender === playerId
+                ? "flex justify-end"
+                : "flex justify-start"
+            }
+          >
+            <div
+              className={
+                message.sender === playerId
+                  ? "max-w-[80%] bg-purple-600 text-white rounded-2xl rounded-br-sm px-3 py-2"
+                  : "max-w-[80%] bg-white text-purple-900 rounded-2xl rounded-bl-sm px-3 py-2"
+              }
+            >
+              <div className="text-[10px] opacity-60 mb-1">
+                {message.senderName}
+              </div>
+
+              <div className="text-sm break-words">
+                {message.text}
+              </div>
+            </div>
+          </div>
+        ))}
+
+      </div>
+
+      {showEmojiPicker && (
+        <div className="flex flex-wrap gap-2 mt-3 bg-purple-50 rounded-2xl p-3">
+          {EMOJIS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => {
+                addEmoji(emoji);
+                inputRef.current?.focus();
+              }}
+              className="text-2xl hover:scale-125 transition"
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2 mt-3">
+
+        <button
+          type="button"
+          onClick={() =>
+            setShowEmojiPicker(!showEmojiPicker)
+          }
+          className="w-11 h-11 flex-shrink-0 rounded-xl bg-purple-100"
+        >
+          😊
+        </button>
+
+        <input
+          ref={inputRef}
+          type="text"
+          value={chatText}
+          onChange={(e) => setChatText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          placeholder="Type a message..."
+          autoComplete="off"
+          className="flex-1 min-w-0 bg-purple-50 rounded-xl px-3 py-3 outline-none focus:ring-2 focus:ring-purple-300"
+        />
+
+        <button
+          type="button"
+          onClick={handleSend}
+          className="w-11 h-11 flex-shrink-0 rounded-xl bg-purple-600 text-white flex items-center justify-center"
+        >
+          <Send size={18} />
+        </button>
+
+      </div>
+
+    </div>
+  );
+}
 export default function DeepzTheGreat() {
   const router = useRouter();
 
@@ -853,137 +980,6 @@ export default function DeepzTheGreat() {
     });
   };
 
-  /* =========================================================
-     CHAT COMPONENT
-  ========================================================= */
-
-
-
-const ChatBox = () => {
-  const inputRef = React.useRef(null);
-
-  const handleSend = async () => {
-    await sendMessage();
-
-    // Keep the cursor in the input after sending
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 0);
-  };
-
-  return (
-    <div className="mt-5 bg-white/90 rounded-3xl shadow-xl border border-purple-100 p-4">
-
-      {/* CHAT HEADER */}
-      <div className="flex items-center gap-2 mb-3">
-        <MessageCircle size={20} />
-
-        <h3 className="font-bold">
-          Chat
-        </h3>
-      </div>
-
-      {/* MESSAGES */}
-      <div className="h-44 overflow-y-auto bg-purple-50 rounded-2xl p-3 space-y-2">
-
-        {messages.length === 0 && (
-          <div className="text-center text-purple-300 text-sm pt-14">
-            Start chatting 💬
-          </div>
-        )}
-
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={
-              message.sender === playerId
-                ? "flex justify-end"
-                : "flex justify-start"
-            }
-          >
-            <div
-              className={
-                message.sender === playerId
-                  ? "max-w-[80%] bg-purple-600 text-white rounded-2xl rounded-br-sm px-3 py-2"
-                  : "max-w-[80%] bg-white text-purple-900 rounded-2xl rounded-bl-sm px-3 py-2"
-              }
-            >
-              <div className="text-[10px] opacity-60 mb-1">
-                {message.senderName}
-              </div>
-
-              <div className="text-sm break-words">
-                {message.text}
-              </div>
-            </div>
-          </div>
-        ))}
-
-      </div>
-
-      {/* EMOJI PICKER */}
-      {showEmojiPicker && (
-        <div className="flex flex-wrap gap-2 mt-3 bg-purple-50 rounded-2xl p-3">
-          {EMOJIS.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              onClick={() => {
-                addEmoji(emoji);
-                inputRef.current?.focus();
-              }}
-              className="text-2xl hover:scale-125 transition"
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* INPUT AREA */}
-      <div className="flex gap-2 mt-3">
-
-        <button
-          type="button"
-          onClick={() =>
-            setShowEmojiPicker(!showEmojiPicker)
-          }
-          className="w-11 h-11 flex-shrink-0 rounded-xl bg-purple-100"
-        >
-          😊
-        </button>
-
-        <input
-          ref={inputRef}
-          type="text"
-          value={chatText}
-          onChange={(e) => {
-            setChatText(e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder="Type a message..."
-          autoComplete="off"
-          className="flex-1 min-w-0 bg-purple-50 rounded-xl px-3 py-3 outline-none focus:ring-2 focus:ring-purple-300"
-        />
-
-        <button
-          type="button"
-          onClick={handleSend}
-          className="w-11 h-11 flex-shrink-0 rounded-xl bg-purple-600 text-white flex items-center justify-center"
-        >
-          <Send size={18} />
-        </button>
-
-      </div>
-
-    </div>
-  );
-};
 
   /* =========================================================
      PAGE
@@ -1620,7 +1616,16 @@ const ChatBox = () => {
 
               </div>
 
-              <ChatBox />
+              <ChatBox
+  messages={messages}
+  playerId={playerId}
+  chatText={chatText}
+  setChatText={setChatText}
+  sendMessage={sendMessage}
+  showEmojiPicker={showEmojiPicker}
+  setShowEmojiPicker={setShowEmojiPicker}
+  addEmoji={addEmoji}
+/>
             </>
           )}
 
