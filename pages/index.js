@@ -22,6 +22,7 @@ import {
   update,
   push,
   runTransaction,
+  
 } from "firebase/database";
 
 import { db } from "../lib/firebase";
@@ -351,7 +352,7 @@ export default function DeepzTheGreat() {
 
   const [screen, setScreen] = useState("home");
   const [room, setRoom] = useState(null);
-
+  
   const [selectedLevel, setSelectedLevel] = useState("");
 
   const [customText, setCustomText] = useState("");
@@ -379,33 +380,22 @@ export default function DeepzTheGreat() {
     }
 
     if (urlRoom) {
-      const code = String(urlRoom).toUpperCase();
+  const code = String(urlRoom).toUpperCase();
 
-      setRoomCode(code);
+  setRoomCode(code);
+  setPlayerId("");
+  setRoom(null);
+  setScreen("home");
 
-      /*
-       * If this browser already belongs to this room,
-       * restore its player.
-       */
-      if (savedPlayer && savedRoom === code) {
-        setPlayerId(savedPlayer);
-        setScreen("lobby");
-      } else {
-        /*
-         * New browser/device joining through share link.
-         */
-        setPlayerId("");
-        setScreen("join");
-      }
+  return;
+}
+      
 
-      return;
-    }
-
-    if (savedPlayer && savedRoom) {
-      setPlayerId(savedPlayer);
-      setRoomCode(savedRoom);
-      setScreen("lobby");
-    }
+   if (savedPlayer && savedRoom) {
+  setPlayerId(savedPlayer);
+  setRoomCode(savedRoom);
+  setScreen("home");
+}
   }, [router.isReady, router.query.room]);
 
   /* =========================================================
@@ -435,6 +425,7 @@ export default function DeepzTheGreat() {
         }
 
         setRoom(data);
+        
 
         /*
          * Keep selected level in local React state too.
@@ -689,42 +680,53 @@ export default function DeepzTheGreat() {
      START GAME
   ========================================================= */
 
-  const startGame = async () => {
-    try {
-      if (playerId !== "p1") {
-        return;
-      }
+ const startGame = async () => {
+  try {
+    if (playerId !== "p1") return;
 
-      if (!room?.players?.p1) {
-        alert("Player 1 is missing.");
-        return;
-      }
-
-      if (!room?.players?.p2) {
-        alert("Waiting for Player 2 to join.");
-        return;
-      }
-
-      if (!selectedLevel) {
-        alert("Choose a level first.");
-        return;
-      }
-
-      await update(ref(db, `rooms/${roomCode}`), {
-        status: "playing",
-        selectedLevel,
-        currentTurn: "p1",
-        challenge: null,
-      });
-    } catch (error) {
-      console.error("START GAME ERROR:", error);
-
-      alert(
-        `Could not start game.\n${error.message}`
-      );
+    if (!room?.players?.p1) {
+      alert("Player 1 is missing.");
+      return;
     }
-  };
 
+    if (!room?.players?.p2) {
+      alert("Waiting for Player 2 to join.");
+      return;
+    }
+
+    if (!selectedLevel) {
+      alert("Choose a level first.");
+      return;
+    }
+
+    const oldHistory = room.history || {};
+    const oldPreviousHistory = room.previousHistory || {};
+
+    const newPreviousHistory =
+      Object.keys(oldHistory).length > 0
+        ? {
+            ...oldPreviousHistory,
+            [Date.now()]: oldHistory,
+          }
+        : oldPreviousHistory;
+
+    await update(ref(db, `rooms/${roomCode}`), {
+      status: "playing",
+      selectedLevel,
+      currentTurn: "p1",
+      challenge: null,
+      history: {},
+      previousHistory: newPreviousHistory,
+    });
+
+  } catch (error) {
+    console.error("START GAME ERROR:", error);
+
+    alert(
+      `Could not start game.\n${error.message}`
+    );
+  }
+};
   /* =========================================================
      CHOOSE TRUTH / DARE
   ========================================================= */
@@ -887,13 +889,12 @@ export default function DeepzTheGreat() {
         ? "p2"
         : "p1";
 
-    await update(
-      ref(db, `rooms/${roomCode}`),
-      {
-        currentTurn: nextTurn,
-        challenge: null,
-      }
-    );
+  await update(ref(db, `rooms/${roomCode}`), {
+  status: "playing",
+  selectedLevel: room.selectedLevel,
+  currentTurn: nextTurn,
+  challenge: null,
+});
   } catch (error) {
     console.error("HISTORY ERROR:", error);
 
@@ -977,7 +978,25 @@ const messages = useMemo(() => {
         (a.timestamp || 0)
     );
 }, [room?.history]);
+const previousHistory = useMemo(() => {
+  if (!room?.previousHistory) return [];
 
+  return Object.entries(room.previousHistory)
+    .map(([gameId, gameHistory]) => ({
+      gameId,
+      items: Object.entries(gameHistory || {})
+        .map(([id, item]) => ({
+          id,
+          ...item,
+        }))
+        .sort(
+          (a, b) =>
+            (a.timestamp || 0) -
+            (b.timestamp || 0)
+        ),
+    }))
+    .sort((a, b) => b.gameId - a.gameId);
+}, [room?.previousHistory]);
   /* =========================================================
      COPY LINK
   ========================================================= */
@@ -1124,57 +1143,7 @@ const messages = useMemo(() => {
             </div>
           )}
 
-          {/* =================================================
-              JOIN
-          ================================================= */}
-
-          {screen === "join" && (
-            <div className="bg-white/90 rounded-3xl shadow-xl p-6">
-
-              <button
-                onClick={() => {
-                  setScreen("home");
-                  setRoomCode("");
-                  router.push("/", undefined, {
-                    shallow: true,
-                  });
-                }}
-                className="mb-5"
-              >
-                <ArrowLeft />
-              </button>
-
-              <h2 className="text-2xl font-black">
-                Join Room
-              </h2>
-
-              <p className="text-purple-400 mt-2">
-                Room:{" "}
-                <strong>{roomCode}</strong>
-              </p>
-
-              <input
-                value={playerName}
-                onChange={(e) =>
-                  setPlayerName(e.target.value)
-                }
-                placeholder="Your name..."
-                autoComplete="off"
-                className="w-full mt-5 bg-purple-50 rounded-2xl px-4 py-4 outline-none"
-              />
-
-              <button
-                onClick={joinRoom}
-                disabled={loading}
-                className="w-full mt-4 bg-purple-600 disabled:bg-purple-300 text-white font-bold py-4 rounded-2xl"
-              >
-                {loading
-                  ? "Joining..."
-                  : "Join Now"}
-              </button>
-
-            </div>
-          )}
+          
 
           {/* =================================================
               LOBBY
@@ -1716,6 +1685,71 @@ const messages = useMemo(() => {
 
           <div className="text-xs text-purple-400 mt-2">
             Answered by {item.playerName}
+          </div>
+
+        </div>
+      ))}
+
+    </div>
+  )}
+
+</div>
+<div className="mt-5 bg-white/90 rounded-3xl shadow-xl border border-purple-100 p-5">
+
+  <div className="flex items-center gap-2 mb-4">
+    <span className="text-xl">🗂️</span>
+
+    <h3 className="font-bold text-lg">
+      Previous Games
+    </h3>
+  </div>
+
+  {previousHistory.length === 0 ? (
+    <div className="text-center text-purple-300 text-sm py-6">
+      No previous games yet 💜
+    </div>
+  ) : (
+    <div className="space-y-3 max-h-80 overflow-y-auto">
+
+      {previousHistory.map((game, index) => (
+        <div
+          key={game.gameId}
+          className="bg-purple-50 rounded-2xl p-4"
+        >
+
+          <p className="font-bold">
+            Game {previousHistory.length - index}
+          </p>
+
+          <p className="text-xs text-purple-400 mt-1">
+            {game.items.length} questions/dares
+          </p>
+
+          <div className="mt-3 space-y-2">
+
+            {game.items.map((item) => (
+              <div
+                key={item.id}
+                className="bg-white rounded-xl p-3"
+              >
+
+                <p className="text-xs font-bold">
+                  {item.type === "truth"
+                    ? "🟣 Truth"
+                    : "🔴 Dare"}
+                </p>
+
+                <p className="text-sm mt-1">
+                  {item.text}
+                </p>
+
+                <p className="text-xs text-purple-400 mt-1">
+                  Answered by {item.playerName}
+                </p>
+
+              </div>
+            ))}
+
           </div>
 
         </div>
