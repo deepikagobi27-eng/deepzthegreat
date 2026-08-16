@@ -366,38 +366,55 @@ export default function DeepzTheGreat() {
      INITIALIZE FROM URL / LOCAL STORAGE
   ========================================================= */
 
-  useEffect(() => {
-    if (!router.isReady) return;
+useEffect(() => {
+  if (!router.isReady) return;
 
-    const urlRoom = router.query.room;
+  const urlRoom = router.query.room
+    ? String(router.query.room).toUpperCase()
+    : "";
 
-    const savedPlayer = localStorage.getItem("deepz-player-id");
-    const savedRoom = localStorage.getItem("deepz-room-code");
-    const savedName = localStorage.getItem("deepz-player-name");
+  const savedPlayer = sessionStorage.getItem("deepz-player-id");
+  const savedRoom = sessionStorage.getItem("deepz-room-code");
+  const savedName = sessionStorage.getItem("deepz-player-name");
 
-    if (savedName) {
-      setPlayerName(savedName);
-    }
+  if (savedName) {
+    setPlayerName(savedName);
+  }
 
-    if (urlRoom) {
-  const code = String(urlRoom).toUpperCase();
+  // If this tab already belongs to a player in this room,
+  // restore that player.
+  if (
+    urlRoom &&
+    savedRoom === urlRoom &&
+    (savedPlayer === "p1" || savedPlayer === "p2")
+  ) {
+    setRoomCode(urlRoom);
+    setPlayerId(savedPlayer);
+    setScreen("lobby");
+    return;
+  }
 
-  setRoomCode(code);
-  setPlayerId("");
-  setRoom(null);
-  setScreen("home");
+  // A shared room link opened in a NEW tab has no session identity.
+  // Let that tab join as Player 2.
+  if (urlRoom) {
+    setRoomCode(urlRoom);
+    setPlayerId("");
+    setRoom(null);
+    setScreen("home");
+    return;
+  }
 
-  return;
-}
-      
-
-   if (savedPlayer && savedRoom) {
-  setPlayerId(savedPlayer);
-  setRoomCode(savedRoom);
-  setScreen("home");
-}
-  }, [router.isReady, router.query.room]);
-
+  // Restore an existing session.
+  if (
+    savedPlayer &&
+    savedRoom &&
+    (savedPlayer === "p1" || savedPlayer === "p2")
+  ) {
+    setPlayerId(savedPlayer);
+    setRoomCode(savedRoom);
+    setScreen("lobby");
+  }
+}, [router.isReady, router.query.room]);
   /* =========================================================
      REALTIME ROOM LISTENER
   ========================================================= */
@@ -522,12 +539,12 @@ export default function DeepzTheGreat() {
         );
       }
 
-      localStorage.setItem("deepz-player-id", "p1");
-      localStorage.setItem("deepz-room-code", code);
-      localStorage.setItem(
-        "deepz-player-name",
-        playerName.trim()
-      );
+      sessionStorage.setItem("deepz-player-id", "p1");
+sessionStorage.setItem("deepz-room-code", code);
+sessionStorage.setItem(
+  "deepz-player-name",
+  playerName.trim()
+);
 
       setPlayerId("p1");
       setRoomCode(code);
@@ -556,126 +573,144 @@ export default function DeepzTheGreat() {
      JOIN ROOM
   ========================================================= */
 
-  const joinRoom = async () => {
-    try {
-      if (!playerName.trim()) {
-        alert("Please enter your name.");
-        return;
-      }
+ const joinRoom = async () => {
+  try {
+    if (!playerName.trim()) {
+      alert("Please enter your name.");
+      return;
+    }
 
-      const code = roomCode.trim().toUpperCase();
+    // IMPORTANT:
+    // If this browser already belongs to Player 1 or Player 2,
+    // NEVER allow it to join the same room again.
+    const existingPlayer = sessionStorage.getItem(
+      "deepz-player-id"
+    );
 
-      if (!code) {
-        alert("Enter the room code.");
-        return;
-      }
+    const existingRoom = sessionStorage.getItem(
+      "deepz-room-code"
+    );
 
-      setLoading(true);
-
-      console.log("JOINING:", code);
-
-      const roomRef = ref(db, `rooms/${code}`);
-
-      /*
-       * Atomically claim p2.
-       *
-       * This is much safer than:
-       *
-       *   read room
-       *   check p2
-       *   update p2
-       *
-       * because two people could otherwise try to join
-       * simultaneously.
-       */
-      const result = await runTransaction(
-        roomRef,
-        (current) => {
-          if (current === null) {
-            return;
-          }
-
-          if (current.status === "playing") {
-            return;
-          }
-
-          if (
-            current.players &&
-            current.players.p2
-          ) {
-            return;
-          }
-
-          return {
-            ...current,
-
-            players: {
-              ...(current.players || {}),
-
-              p2: {
-                name: playerName.trim(),
-              },
-            },
-          };
-        }
+    if (
+      existingPlayer === "p1" ||
+      existingPlayer === "p2"
+    ) {
+      alert(
+        `This browser is already ${existingPlayer.toUpperCase()} in room ${existingRoom || ""}.`
       );
+      return;
+    }
 
-      if (!result.committed) {
-        const current = result.snapshot.val();
+    const code = roomCode.trim().toUpperCase();
 
-        if (!current) {
-          alert("Room not found.");
+    if (!code) {
+      alert("Enter the room code.");
+      return;
+    }
+
+    setLoading(true);
+
+    console.log("JOINING ROOM:", code);
+
+    const roomRef = ref(db, `rooms/${code}`);
+
+    const result = await runTransaction(
+      roomRef,
+      (current) => {
+        if (current === null) {
           return;
         }
 
         if (current.status === "playing") {
-          alert("The game has already started.");
           return;
         }
 
+        // P2 already exists
         if (current.players?.p2) {
-          alert("This room already has Player 2.");
           return;
         }
 
-        alert("Could not join the room. Please try again.");
+        return {
+          ...current,
+
+          players: {
+            ...(current.players || {}),
+
+            p2: {
+              name: playerName.trim(),
+            },
+          },
+        };
+      }
+    );
+
+    if (!result.committed) {
+      const current = result.snapshot.val();
+
+      if (!current) {
+        alert("Room not found.");
         return;
       }
 
-      console.log("PLAYER 2 ADDED!");
+      if (current.status === "playing") {
+        alert("The game has already started.");
+        return;
+      }
 
-      localStorage.setItem("deepz-player-id", "p2");
-      localStorage.setItem("deepz-room-code", code);
-      localStorage.setItem(
-        "deepz-player-name",
-        playerName.trim()
-      );
+      if (current.players?.p2) {
+        alert("This room already has Player 2.");
+        return;
+      }
 
-      setPlayerId("p2");
-      setRoomCode(code);
-      setScreen("lobby");
-
-      /*
-       * Make sure URL contains the room.
-       */
-      await router.push(
-        `/?room=${code}`,
-        undefined,
-        { shallow: true }
-      );
-    } catch (error) {
-      console.error("JOIN ROOM ERROR:", error);
-
-      alert(
-        `Could not join room.\n\n${
-          error.code || "ERROR"
-        }\n\n${error.message || error}`
-      );
-    } finally {
-      setLoading(false);
+      alert("Could not join the room. Please try again.");
+      return;
     }
-  };
 
+    console.log("PLAYER 2 SUCCESSFULLY ADDED");
+
+    sessionStorage.setItem(
+      "deepz-player-id",
+      "p2"
+    );
+
+    sessionStorage.setItem(
+      "deepz-room-code",
+      code
+    );
+
+    sessionStorage.setItem(
+      "deepz-player-name",
+      playerName.trim()
+    );
+
+    setPlayerId("p2");
+    setRoomCode(code);
+    setScreen("lobby");
+
+    await router.replace(
+      `/?room=${code}`,
+      undefined,
+      { shallow: true }
+    );
+
+  } catch (error) {
+    console.error(
+      "JOIN ROOM ERROR:",
+      error
+    );
+
+    alert(
+      `Could not join room.\n\n${
+        error.code || "ERROR"
+      }\n\n${
+        error.message || error
+      }`
+    );
+
+  } finally {
+    setLoading(false);
+  }
+};
   /* =========================================================
      START GAME
   ========================================================= */
@@ -1027,9 +1062,9 @@ const previousHistory = useMemo(() => {
   ========================================================= */
 
   const leaveRoom = () => {
-    localStorage.removeItem("deepz-player-id");
-    localStorage.removeItem("deepz-room-code");
-    localStorage.removeItem("deepz-player-name");
+    sessionStorage.removeItem("deepz-player-id");
+sessionStorage.removeItem("deepz-room-code");
+sessionStorage.removeItem("deepz-player-name");
 
     setPlayerId("");
     setRoomCode("");
@@ -1130,7 +1165,11 @@ const previousHistory = useMemo(() => {
 
               <button
                 onClick={joinRoom}
-                disabled={loading}
+                disabled={
+  loading ||
+  playerId === "p1" ||
+  playerId === "p2"
+}
                 className="w-full mt-3 border-2 border-purple-600 disabled:border-purple-200 disabled:text-purple-300 text-purple-600 font-bold py-4 rounded-2xl flex justify-center gap-2"
               >
                 <UserPlus size={19} />
